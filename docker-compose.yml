@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  # PostgreSQL 数据库
+  postgres:
+    image: postgres:16
+    container_name: aigtm_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # n8n 工作流引擎
+  n8n:
+    image: docker.n8n.io/n8nio/n8n
+    container_name: aigtm_n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      # 时区设置
+      TZ: Asia/Shanghai
+      GENERIC_TIMEZONE: Asia/Shanghai
+
+      # n8n 安全设置
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+
+      # 数据库配置 - 使用 PostgreSQL
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_POSTGRESDB_SCHEMA: n8n
+
+      # 加密密钥（用于保护 credentials）
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+
+      # Webhook 配置（本地开发）
+      WEBHOOK_URL: http://localhost:5678/
+
+    volumes:
+      # 持久化 n8n 数据（包括加密密钥、日志等）
+      - n8n_data:/home/node/.n8n
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  n8n_data:

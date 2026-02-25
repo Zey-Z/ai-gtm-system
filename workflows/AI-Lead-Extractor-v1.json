@@ -1,0 +1,1405 @@
+{
+  "name": "AI Lead Extractor v1",
+  "nodes": [
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-3.5-turbo",
+          "mode": "list",
+          "cachedResultName": "GPT-3.5-TURBO"
+        },
+        "responses": {
+          "values": [
+            {
+              "content": "=你是一个销售线索信息提取助手。\n\n输入是一段客户的咨询文本，请提取以下信息并以 JSON 格式返回：\n- company: 公司名称（如果没有提到，返回 null）\n- contact_name: 联系人姓名（如果没有提到，返回 null）\n- email: 邮箱地址（如果没有提到，返回 null）\n- budget: 预算范围（如果没有提到，返回 null）\n- urgency: 时间紧急度（如果没有提到，返回 null）\n\n输入文本：\n{{ $('1.5-Validate-Input-Generate-RunID').item.json.lead_text }}\n\n请只返回 JSON，不要有其他解释。"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {
+          "textFormat": {
+            "textOptions": {
+              "type": "json_object"
+            }
+          },
+          "temperature": 0.1
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.1,
+      "position": [
+        1264,
+        -64
+      ],
+      "id": "64f35055-00ec-47d0-b6c3-dc24216a8750",
+      "name": "2-AI-Extract-Info",
+      "alwaysOutputData": false,
+      "credentials": {
+        "openAiApi": {
+          "id": "3R4A1arhplqNP80D",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ==============================================\n// 节点 3: 整理数据\n// 功能: 提取 AI 输出、计算评分、准备写入数据库\n// ==============================================\n\n// 1. 获取各个节点的数据\nconst run_id = $('1.5-Validate-Input-Generate-RunID').item.json.run_id;\nconst external_id = $('1.5-Validate-Input-Generate-RunID').item.json.external_id;\nconst lead_text = $('1.5-Validate-Input-Generate-RunID').item.json.lead_text;\n\n// 2. 获取 AI 提取的数据（已经过验证）\nconst aiData = $('2.5-Validate-AI-Output').item.json;\n\n// 3. 辅助函数：将 \"null\" 字符串和 null 统一处理为 null\nfunction toNullable(value) {\n  if (value === null || value === undefined || value === 'null' || value === '') {\n    return null;\n  }\n  return value;\n}\n\n// 4. SQL 单引号转义函数（防止 SQL 注入）\nfunction escapeSql(value) {\n  if (value === null || value === undefined) return null;\n  return String(value).replace(/'/g, \"''\");\n}\n\n// 5. 提取并标准化字段\nconst company = toNullable(aiData.company);\nconst contact_name = toNullable(aiData.contact_name);\nconst email = toNullable(aiData.email);\nconst budget = toNullable(aiData.budget);\nconst urgency = toNullable(aiData.urgency);\n\n// 6. 计算评分（基于规则）\nlet score = 50; // 基础分\n\n// 6.1 预算加分（最高 30 分）\nif (budget && budget !== 'null') {\n  if (budget.includes('万') || budget.includes('$') || budget.includes('美元')) {\n    score += 30;\n  }\n}\n\n// 6.2 紧急度加分（最高 20 分）\nif (urgency && urgency !== 'null') {\n  if (urgency.includes('天') || urgency.includes('周') || urgency.includes('紧急')) {\n    score += 20;\n  }\n}\n\n// 6.3 有邮箱加分（10 分）\nif (email && email !== 'null') {\n  score += 10;\n}\n\n// 6.4 应用验证扣罚（新增逻辑）\nconst validation = aiData.validation;\nif (validation && validation.score_penalty) {\n  score -= validation.score_penalty;\n  score = Math.max(score, 0);  // 确保不低于 0\n}\n\n// 6.5 确保评分在 0-100 之间\nscore = Math.min(Math.max(score, 0), 100);\n\n// 7. 返回整理后的数据（所有字符串字段经过 SQL 转义）\nreturn {\n  json: {\n    run_id: run_id,\n    external_id: external_id,\n    idempotency_key: $('1.5-Validate-Input-Generate-RunID').item.json.idempotency_key,\n    raw_text: escapeSql(lead_text),\n    company: escapeSql(company),\n    contact_name: escapeSql(contact_name),\n    email: escapeSql(email),\n    budget: escapeSql(budget),\n    urgency: escapeSql(urgency),\n    score: score,\n    status: 'new',\n    validation: validation\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1840,
+        -64
+      ],
+      "id": "94592d9a-b3ee-4fc2-8ede-dc209e0e3ca6",
+      "name": "3-Prepare-Data"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO leads (\n    idempotency_key, external_id, run_id, raw_text,\n    company, contact_name, email, budget,\n    urgency, score, status,\n    created_at, updated_at\n)\nVALUES (\n    '{{ $json.idempotency_key }}',\n    '{{ $json.external_id }}',\n    '{{ $json.run_id }}',\n    '{{ $json.raw_text }}',\n    '{{ $json.company }}',\n    '{{ $json.contact_name }}',\n    '{{ $json.email }}',\n    '{{ $json.budget }}',\n    '{{ $json.urgency }}',\n    {{ $json.score }},\n    '{{ $json.status }}',\n    NOW(),\n    NOW()\n)\nON CONFLICT (idempotency_key) DO UPDATE SET\n    run_id = EXCLUDED.run_id,\n    updated_at = NOW(),\n    company = EXCLUDED.company,\n    contact_name = EXCLUDED.contact_name,\n    email = EXCLUDED.email,\n    budget = EXCLUDED.budget,\n    urgency = EXCLUDED.urgency,\n    score = EXCLUDED.score,\n    status = CASE\n        WHEN leads.status = 'processed' THEN 'processed'\n        ELSE EXCLUDED.status\n    END\nRETURNING id, idempotency_key, external_id, run_id, raw_text,\n          company, contact_name, email, budget, urgency, score, status,\n          created_at, updated_at, (xmax = 0) AS is_new_record;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2064,
+        -64
+      ],
+      "id": "58218919-a39f-4a2c-9e2e-4e9f783ee389",
+      "name": "4-Write-to-Database",
+      "credentials": {
+        "postgres": {
+          "id": "Ok0r1JvGdedXb5am",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "446d09d5-90ce-4aba-9e14-9a4c5229a493",
+              "leftValue": "={{ $('3-Prepare-Data').item.json.score }}",
+              "rightValue": 70,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2960,
+        -160
+      ],
+      "id": "dfa8974f-ea1c-4204-a57b-f0f2d6a45aac",
+      "name": "5-Check-High-Score"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-intake",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        144,
+        32
+      ],
+      "id": "cff650f8-addd-4ffd-b30a-fddccff8a896",
+      "name": "1-Receive-Webhook",
+      "webhookId": "996bf28f-ea49-4cdc-a9bc-c99dcca13247"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== 1. 获取请求数据 =====\nconst body = $input.item.json.body || $input.item.json;\n\n// ===== 2. 输入校验 =====\nconst lead_text = body.lead_text;\nif (!lead_text || lead_text.trim() === '') {\n  // 返回校验失败标志（不再 throw Error）\n  return {\n    json: {\n      is_valid: false,\n      error: 'Missing required field: lead_text'\n    }\n  };\n}\n\n// ===== 3. 生成 run_id（链路追踪） =====\nconst run_id = $execution.id || 'local_' + Date.now();\n\n// ===== 4. 生成 external_id（业务主键） =====\nconst timestamp = Date.now();\nconst randomStr = Math.random().toString(36).substring(2, 9);\nconst external_id = `lead_${timestamp}_${randomStr}`;\n\n// ===== 5. 文本标准化（增强版） =====\nconst normalizedText = lead_text\n  .trim()\n  .toLowerCase()\n  .replace(/\\s+/g, ' ')\n  .replace(/\\s*([，。、！？,.])\\s*/g, '$1');\n\n// ===== 6. DJB2 hash 函数（稳定版） =====\nfunction stableHash(str) {\n  let hash = 5381;\n  for (let i = 0; i < str.length; i++) {\n    const char = str.charCodeAt(i);\n    hash = ((hash << 5) + hash) + char;\n    hash = hash >>> 0;\n  }\n  return hash.toString(36) + '_L' + str.length.toString(36);\n}\n\n// ===== 7. 生成幂等键 =====\nconst hash = stableHash(normalizedText);\nconst idempotency_key = `lead:${hash}`;\n\n// ===== 8. 返回所有字段 =====\nreturn {\n  json: {\n    is_valid: true,\n    run_id: run_id,\n    external_id: external_id,\n    idempotency_key: idempotency_key,\n    lead_text: lead_text.trim(),\n    normalized_text: normalizedText,\n    source: body.source || 'webhook',\n    received_at: new Date().toISOString()\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        368,
+        32
+      ],
+      "id": "111b2511-d9d9-4b31-a453-6f2c140e7f72",
+      "name": "1.5-Validate-Input-Generate-RunID"
+    },
+    {
+      "parameters": {
+        "schema": {
+          "__rl": true,
+          "value": "public",
+          "mode": "list",
+          "cachedResultName": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "events",
+          "mode": "list",
+          "cachedResultName": "events"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "step": "lead_created",
+            "status": "success",
+            "run_id": "={{ $json.run_id }}",
+            "lead_id": "={{ $json.id }}"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "lead_id",
+              "displayName": "lead_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "step",
+              "displayName": "step",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error_message",
+              "displayName": "error_message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "data",
+              "displayName": "data",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "run_id",
+              "displayName": "run_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2288,
+        -64
+      ],
+      "id": "a9bd80e5-f640-4ca8-b973-ed66518d000a",
+      "name": "4.5-Log-Lead-Created",
+      "credentials": {
+        "postgres": {
+          "id": "Ok0r1JvGdedXb5am",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "events",
+          "mode": "list",
+          "cachedResultName": "events"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "lead_id": "={{ $('4-Write-to-Database').item.json.id }}",
+            "run_id": "={{ $('1.5-Validate-Input-Generate-RunID').item.json.run_id }}",
+            "step": "notification_sent",
+            "status": "success"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "lead_id",
+              "displayName": "lead_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "step",
+              "displayName": "step",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error_message",
+              "displayName": "error_message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "data",
+              "displayName": "data",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "run_id",
+              "displayName": "run_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        4080,
+        -256
+      ],
+      "id": "8ded6e9f-39bc-4d38-b0e6-55a920c9db80",
+      "name": "6.5b-Log-Notification-Sent",
+      "credentials": {
+        "postgres": {
+          "id": "Ok0r1JvGdedXb5am",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// 节点 2.5: 验证 AI 输出\n// 功能: 检查 AI 提取的数据是否符合预期格式\n// ============================================================\n\n// 1. 获取 AI 提取的数据（从正确的路径）\nconst aiOutput = $input.item.json.output[0].content[0].text;\n\n// 2. 定义验证结果\nlet validationResult = {\n  is_valid: true,\n  errors: [],\n  warnings: [],\n  score_penalty: 0\n};\n\n// 3. 验证必填字段（如果 AI 说提取到了，就必须有值）\nconst requiredFields = {\n  company: aiOutput.company,\n  contact_name: aiOutput.contact_name,\n  email: aiOutput.email,\n  budget: aiOutput.budget,\n  urgency: aiOutput.urgency\n};\n\n// 统计提取到的字段数\nlet extractedCount = 0;\nfor (const [field, value] of Object.entries(requiredFields)) {\n  if (value && value !== null && value !== 'null' && value.trim() !== '') {\n    extractedCount++;\n  }\n}\n\n// 如果提取字段太少，警告\nif (extractedCount < 2) {\n  validationResult.warnings.push(`AI 只提取到 ${extractedCount} 个字段，数据质量较低`);\n  validationResult.score_penalty += 10;\n}\n\n// 4. Email 格式验证\nif (aiOutput.email && aiOutput.email !== null && aiOutput.email !== 'null') {\n  const emailRegex = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\n  if (!emailRegex.test(aiOutput.email.trim())) {\n    validationResult.errors.push(`Email 格式不正确: ${aiOutput.email}`);\n    validationResult.score_penalty += 20;\n    validationResult.is_valid = false;\n  }\n}\n\n// 5. 数据类型检查（确保返回的是字符串或 null）\nfor (const [field, value] of Object.entries(requiredFields)) {\n  if (value !== null && typeof value !== 'string') {\n    validationResult.errors.push(`字段 ${field} 类型错误，期望字符串，得到 ${typeof value}`);\n    validationResult.score_penalty += 10;\n  }\n}\n\n// 6. 返回结果（包含原始数据 + 验证结果）\nreturn {\n  json: {\n    ...aiOutput,  // 保留所有 AI 输出\n    validation: validationResult  // 添加验证结果\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1616,
+        -64
+      ],
+      "id": "537b8486-529a-473d-941f-c13c122dd897",
+      "name": "2.5-Validate-AI-Output"
+    },
+    {
+      "parameters": {
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "events",
+          "mode": "list",
+          "cachedResultName": "events"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "lead_id": "={{ $('4-Write-to-Database').item.json.id }}",
+            "run_id": "={{ $('1.5-Validate-Input-Generate-RunID').item.json.run_id }}",
+            "step": "ai_validation",
+            "status": "=\t{{ $('2.5-Validate-AI-Output').item.json.validation.is_valid ? 'success' : 'warning' }}",
+            "created_at": "={{ $now }}",
+            "data": "={{ JSON.stringify($('2.5-Validate-AI-Output').item.json.validation) }}"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "lead_id",
+              "displayName": "lead_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "step",
+              "displayName": "step",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error_message",
+              "displayName": "error_message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "data",
+              "displayName": "data",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "run_id",
+              "displayName": "run_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2736,
+        -160
+      ],
+      "id": "5f57f059-95b2-4c2e-8430-5975d13b876c",
+      "name": "4.7-Log-Validation-Result",
+      "credentials": {
+        "postgres": {
+          "id": "Ok0r1JvGdedXb5am",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "appToken",
+        "email": "={{ $('4-Write-to-Database').item.json.email }}",
+        "additionalFields": {
+          "companyName": "={{ $('4-Write-to-Database').item.json.company }}",
+          "firstName": "={{ $('2-AI-Extract-Info').item.json.contact_name ? $('2-AI-Extract-Info').item.json.contact_name.split(' ')[0] : '' }}",
+          "lastName": "={{ $('2-AI-Extract-Info').item.json.contact_name ? $('2-AI-Extract-Info').item.json.contact_name.split(' ').slice(1).join(' ') : '' }}",
+          "leadStatus": "NEW"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2.2,
+      "position": [
+        3184,
+        -256
+      ],
+      "id": "6ae175fc-ea48-4c13-8e8f-2d8a2c4992aa",
+      "name": "6-HubSpot Contact Upsert",
+      "credentials": {
+        "hubspotAppToken": {
+          "id": "9cmVtUZUQyyifdhO",
+          "name": "HubSpot App Token account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "events",
+          "mode": "list",
+          "cachedResultName": "events"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "lead_id": "={{ $('4-Write-to-Database').first().json.id }}",
+            "run_id": "={{ $('1.5-Validate-Input-Generate-RunID').item.json.run_id }}",
+            "step": "hubspot_sync",
+            "status": "success",
+            "data": "={\n  \"contact_id\": \"{{ $('6-HubSpot Contact Upsert').item.json.id }}\",\n  \"email\": \"{{ $('6-HubSpot Contact Upsert').item.json.properties.email }}\",\n  \"operation\": \"{{ $('6-HubSpot Contact Upsert').item.json.createdAt === $('6-HubSpot Contact Upsert').item.json.updatedAt ? 'created' : 'updated' }}\",\n  \"lead_score\": {{ $('4-Write-to-Database').item.json.score }},\n  \"hubspot_url\": \"https://app.hubspot.com/contacts/YOUR_HUBSPOT_PORTAL_ID/contact/{{ $('6-HubSpot Contact Upsert').item.json.id }}\"\n}"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "lead_id",
+              "displayName": "lead_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "step",
+              "displayName": "step",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error_message",
+              "displayName": "error_message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "data",
+              "displayName": "data",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "run_id",
+              "displayName": "run_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        3408,
+        -256
+      ],
+      "id": "e948e94a-aaee-484e-9153-c954c02bf6a7",
+      "name": "6.5-Log HubSpot Sync Event",
+      "credentials": {
+        "postgres": {
+          "id": "Ok0r1JvGdedXb5am",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "YOUR_SLACK_WEBHOOK_URL",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"🚨 High-Quality Lead Alert!\\n\\nCompany: {{ $json.company }}\\nContact: {{ $json.contact_name }}\\nEmail: {{ $json.email }}\\nBudget: {{ $json.budget }}\\nUrgency: {{ $json.urgency }}\\nLead Score: {{ $json.score }}/100\\n\\n📋 HubSpot: {{ $json.hubspot_url }}\\n\\n🔍 Run ID: {{ $json.run_id }}\"\n}\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        3856,
+        -256
+      ],
+      "id": "cf2c3999-9ee5-4968-9842-c9b67216b545",
+      "name": "7-Send-Slack-Notification"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 从各个节点获取数据\nconst leadData = $('4-Write-to-Database').item.json;\nconst hubspotData = $('6-HubSpot Contact Upsert').item.json;\nconst runId = $('1.5-Validate-Input-Generate-RunID').item.json.run_id;\n\n// 从 HubSpot 输出中提取 contact ID\n// 根据你的输出结构，ID 在 properties.hs_object_id.value\nlet contactId;\nif (hubspotData.id) {\n  // 如果顶层有 id（标准格式）\n  contactId = hubspotData.id;\n} else if (hubspotData.properties && hubspotData.properties.hs_object_id) {\n  // 如果在 properties.hs_object_id.value\n  contactId = hubspotData.properties.hs_object_id.value;\n}\n\n// 构造 HubSpot URL\nconst hubspotUrl = `https://app.hubspot.com/contacts/YOUR_HUBSPOT_PORTAL_ID/contact/${contactId}`;\n\n// 返回准备好的数据\nreturn {\n  json: {\n    company: leadData.company || 'N/A',\n    contact_name: leadData.contact_name || 'N/A',\n    email: leadData.email || 'N/A',\n    budget: leadData.budget || 'N/A',\n    urgency: leadData.urgency || 'N/A',\n    score: leadData.score,\n    hubspot_url: hubspotUrl,\n    hubspot_contact_id: contactId,\n    run_id: runId\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3632,
+        -256
+      ],
+      "id": "0899f69d-b1f1-4fbf-8754-0e409620b5fb",
+      "name": "6.7-Prepare-Slack-Data"
+    },
+    {
+      "parameters": {
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "events",
+          "mode": "list",
+          "cachedResultName": "events"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "step": "low_score_completed",
+            "status": "success",
+            "run_id": "={{ $('1.5-Validate-Input-Generate-RunID').item.json.run_id }}",
+            "lead_id": "={{ $('4-Write-to-Database').item.json.id }}"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "lead_id",
+              "displayName": "lead_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "step",
+              "displayName": "step",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error_message",
+              "displayName": "error_message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "data",
+              "displayName": "data",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "run_id",
+              "displayName": "run_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        3184,
+        -64
+      ],
+      "id": "ab8d1f41-2169-4ee6-b268-867a269d060f",
+      "name": "5.5-Log-Low-Score-Complete",
+      "credentials": {
+        "postgres": {
+          "id": "Ok0r1JvGdedXb5am",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "2c004af6-d66d-4c79-b0bb-0c9d8e0c133f",
+              "leftValue": "={{ $('4-Write-to-Database').item.json.is_new_record }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {
+          "ignoreCase": false
+        }
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2512,
+        -64
+      ],
+      "id": "07d72572-915a-490a-aa4a-c5339f681b68",
+      "name": "4.6-Check-New-Record"
+    },
+    {
+      "parameters": {
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "events",
+          "mode": "list",
+          "cachedResultName": "events"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "lead_id": "={{ $('4-Write-to-Database').item.json.id }}",
+            "run_id": "={{ $('1.5-Validate-Input-Generate-RunID').item.json.run_id }}",
+            "status": "skipped",
+            "step": "duplicate_skipped"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "lead_id",
+              "displayName": "lead_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "step",
+              "displayName": "step",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error_message",
+              "displayName": "error_message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "data",
+              "displayName": "data",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "run_id",
+              "displayName": "run_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2736,
+        32
+      ],
+      "id": "132f3134-44c6-4348-acdc-76ee9360b004",
+      "name": "4.6b-Log-Duplicate-Skipped",
+      "credentials": {
+        "postgres": {
+          "id": "Ok0r1JvGdedXb5am",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "514eba9c-758a-4312-97c0-29ca18304009",
+              "leftValue": "={{ $json.is_valid }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        592,
+        32
+      ],
+      "id": "38a7b042-911b-4ccd-8d60-3381a0df2ff1",
+      "name": "1.6-Validation-Result-Check"
+    },
+    {
+      "parameters": {
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "events",
+          "mode": "list",
+          "cachedResultName": "events"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "step": "webhook_received",
+            "status": "success",
+            "run_id": "={{ $json.run_id }}"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "lead_id",
+              "displayName": "lead_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "step",
+              "displayName": "step",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error_message",
+              "displayName": "error_message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "data",
+              "displayName": "data",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "run_id",
+              "displayName": "run_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1040,
+        -64
+      ],
+      "id": "9288cb87-36fa-4b8d-976d-e2dccab53563",
+      "name": "1.7-Log-Webhook-Received",
+      "credentials": {
+        "postgres": {
+          "id": "Ok0r1JvGdedXb5am",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\n  \"status\": \"received\",\n  \"message\": \"Lead intake processing started\"\n}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        816,
+        -64
+      ],
+      "id": "e847168e-a326-43ab-b40d-19865fcc5daf",
+      "name": "1.65-Return-Success-Response"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\n  \"status\": \"error\",\n  \"message\": \"Missing required field: lead_text\"\n}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        816,
+        128
+      ],
+      "id": "d2994bff-ed50-4152-b05f-e8a85e1c40f1",
+      "name": "1.66-Return-Error-Response"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "2-AI-Extract-Info": {
+      "main": [
+        [
+          {
+            "node": "2.5-Validate-AI-Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3-Prepare-Data": {
+      "main": [
+        [
+          {
+            "node": "4-Write-to-Database",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4-Write-to-Database": {
+      "main": [
+        [
+          {
+            "node": "4.5-Log-Lead-Created",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5-Check-High-Score": {
+      "main": [
+        [
+          {
+            "node": "6-HubSpot Contact Upsert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "5.5-Log-Low-Score-Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "1-Receive-Webhook": {
+      "main": [
+        [
+          {
+            "node": "1.5-Validate-Input-Generate-RunID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "1.5-Validate-Input-Generate-RunID": {
+      "main": [
+        [
+          {
+            "node": "1.6-Validation-Result-Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4.5-Log-Lead-Created": {
+      "main": [
+        [
+          {
+            "node": "4.6-Check-New-Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2.5-Validate-AI-Output": {
+      "main": [
+        [
+          {
+            "node": "3-Prepare-Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4.7-Log-Validation-Result": {
+      "main": [
+        [
+          {
+            "node": "5-Check-High-Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6-HubSpot Contact Upsert": {
+      "main": [
+        [
+          {
+            "node": "6.5-Log HubSpot Sync Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6.5-Log HubSpot Sync Event": {
+      "main": [
+        [
+          {
+            "node": "6.7-Prepare-Slack-Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7-Send-Slack-Notification": {
+      "main": [
+        [
+          {
+            "node": "6.5b-Log-Notification-Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6.7-Prepare-Slack-Data": {
+      "main": [
+        [
+          {
+            "node": "7-Send-Slack-Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4.6-Check-New-Record": {
+      "main": [
+        [
+          {
+            "node": "4.7-Log-Validation-Result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "4.6b-Log-Duplicate-Skipped",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "1.6-Validation-Result-Check": {
+      "main": [
+        [
+          {
+            "node": "1.65-Return-Success-Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "1.66-Return-Error-Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "1.7-Log-Webhook-Received": {
+      "main": [
+        [
+          {
+            "node": "2-AI-Extract-Info",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "1.65-Return-Success-Response": {
+      "main": [
+        [
+          {
+            "node": "1.7-Log-Webhook-Received",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false,
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "it8oUdn5j-rjGFLUQ1jTd"
+  },
+  "versionId": "7324c41e-d2c8-4de4-ae13-af6295a00205",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "70761c2c715fda7ab855789f90ed0d98fc6f5c61eb202674453c3f00f4d965ca"
+  },
+  "id": "TGOviy_hg24LKaTwBKn-g",
+  "tags": []
+}
