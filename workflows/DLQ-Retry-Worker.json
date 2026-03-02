@@ -1,0 +1,342 @@
+{
+  "name": "DLQ Retry Worker",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300],
+      "id": "retry-trigger-001",
+      "name": "1-Schedule-Every-15min"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, run_id, lead_id, error_type, failed_step,\n       error_message, payload, retry_count, max_retries,\n       status, next_retry_at, idempotency_key\nFROM dead_letter_queue\nWHERE status = 'pending'\n  AND next_retry_at <= NOW()\nORDER BY next_retry_at ASC\nLIMIT 10;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [480, 300],
+      "id": "retry-query-002",
+      "name": "2-Fetch-Pending-Retries"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "check-has-items",
+              "leftValue": "={{ $json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "number",
+                "operation": "exists"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [700, 300],
+      "id": "retry-check-003",
+      "name": "3-Has-Pending-Items"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE dead_letter_queue\nSET status = 'retrying',\n    updated_at = NOW()\nWHERE id = {{ $json.id }}\nRETURNING *;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [940, 300],
+      "id": "retry-lock-004",
+      "name": "4-Mark-Retrying"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract the original payload and prepare for re-injection\nconst dlqRecord = $input.item.json;\n\nlet payload;\ntry {\n  payload = typeof dlqRecord.payload === 'string'\n    ? JSON.parse(dlqRecord.payload)\n    : dlqRecord.payload;\n} catch (e) {\n  payload = { lead_text: '' };\n}\n\nreturn {\n  json: {\n    dlq_id: dlqRecord.id,\n    dlq_run_id: dlqRecord.run_id,\n    retry_count: dlqRecord.retry_count,\n    max_retries: dlqRecord.max_retries,\n    failed_step: dlqRecord.failed_step,\n    lead_text: payload.lead_text || '',\n    source: 'dlq_retry'\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1180, 300],
+      "id": "retry-prepare-005",
+      "name": "5-Prepare-Retry-Payload"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:5678/webhook/lead-intake",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"lead_text\": \"{{ $json.lead_text }}\",\n  \"source\": \"dlq_retry\",\n  \"dlq_id\": {{ $json.dlq_id }}\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1420, 300],
+      "id": "retry-inject-006",
+      "name": "6-Re-inject-to-Webhook",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "check-retry-success",
+              "leftValue": "={{ String($json.status || '') }}",
+              "rightValue": "received",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1660, 300],
+      "id": "retry-check-success-006b",
+      "name": "6.5-Check-Retry-Success"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE dead_letter_queue\nSET status = 'resolved',\n    resolved_at = NOW(),\n    updated_at = NOW()\nWHERE id = {{ $('5-Prepare-Retry-Payload').item.json.dlq_id }}\nRETURNING id, status;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [1900, 200],
+      "id": "retry-resolve-007",
+      "name": "7-Mark-Resolved"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Retry failed - calculate backoff matching Error Handler pattern\nconst dlqId = $('5-Prepare-Retry-Payload').item.json.dlq_id;\nconst retryCount = $('5-Prepare-Retry-Payload').item.json.retry_count + 1;\nconst maxRetries = $('5-Prepare-Retry-Payload').item.json.max_retries;\n\n// Backoff schedule: 5min, 15min, 60min (matches Error Handler pattern)\nconst retryDelays = [5, 15, 60];\nconst backoffMinutes = retryDelays[Math.min(retryCount - 1, retryDelays.length - 1)];\nconst nextRetryAt = new Date(Date.now() + backoffMinutes * 60 * 1000).toISOString();\n\nconst newStatus = retryCount >= maxRetries ? 'failed_permanently' : 'pending';\n\nreturn {\n  json: {\n    dlq_id: dlqId,\n    retry_count: retryCount,\n    new_status: newStatus,\n    next_retry_at: nextRetryAt,\n    backoff_minutes: backoffMinutes\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1900, 400],
+      "id": "retry-backoff-008",
+      "name": "8-Calculate-Backoff"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE dead_letter_queue\nSET status = '{{ $json.new_status }}',\n    retry_count = {{ $json.retry_count }},\n    next_retry_at = '{{ $json.next_retry_at }}'::timestamp,\n    updated_at = NOW()\nWHERE id = {{ $json.dlq_id }}\nRETURNING id, status, retry_count, next_retry_at;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [2140, 400],
+      "id": "retry-update-009",
+      "name": "9-Update-DLQ-Status"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "check-permanent-fail",
+              "leftValue": "={{ $('8-Calculate-Backoff').item.json.new_status }}",
+              "rightValue": "failed_permanently",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [2380, 400],
+      "id": "retry-check-perm-010",
+      "name": "10-Is-Permanent-Failure"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "YOUR_SLACK_WEBHOOK_URL",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"🚨 DLQ Permanent Failure\\n\\nDLQ ID: {{ $('8-Calculate-Backoff').item.json.dlq_id }}\\nFailed Step: {{ $('5-Prepare-Retry-Payload').item.json.failed_step }}\\nRetry Count: {{ $('8-Calculate-Backoff').item.json.retry_count }}/{{ $('5-Prepare-Retry-Payload').item.json.max_retries }}\\n\\nThis item has exhausted all retries and requires manual intervention.\"\n}"
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [2620, 300],
+      "id": "retry-alert-011",
+      "name": "11-Alert-Permanent-Failure"
+    }
+  ],
+  "connections": {
+    "1-Schedule-Every-15min": {
+      "main": [
+        [
+          {
+            "node": "2-Fetch-Pending-Retries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2-Fetch-Pending-Retries": {
+      "main": [
+        [
+          {
+            "node": "3-Has-Pending-Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3-Has-Pending-Items": {
+      "main": [
+        [
+          {
+            "node": "4-Mark-Retrying",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "4-Mark-Retrying": {
+      "main": [
+        [
+          {
+            "node": "5-Prepare-Retry-Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5-Prepare-Retry-Payload": {
+      "main": [
+        [
+          {
+            "node": "6-Re-inject-to-Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6-Re-inject-to-Webhook": {
+      "main": [
+        [
+          {
+            "node": "6.5-Check-Retry-Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6.5-Check-Retry-Success": {
+      "main": [
+        [
+          {
+            "node": "7-Mark-Resolved",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "8-Calculate-Backoff",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8-Calculate-Backoff": {
+      "main": [
+        [
+          {
+            "node": "9-Update-DLQ-Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9-Update-DLQ-Status": {
+      "main": [
+        [
+          {
+            "node": "10-Is-Permanent-Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "10-Is-Permanent-Failure": {
+      "main": [
+        [
+          {
+            "node": "11-Alert-Permanent-Failure",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

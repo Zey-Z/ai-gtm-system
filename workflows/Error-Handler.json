@@ -1,0 +1,472 @@
+{
+  "name": "Error Handler - DLQ Writer",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [0, 96],
+      "id": "cf72c675-0ad3-42b3-9872-e24656df7136",
+      "name": "Error Trigger"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// Node 1: Parse Error Info\n// ============================================================\n\nconst errorData = $input.all()[0].json;\n\nconst errorInfo = {\n  run_id: errorData.execution?.id || $execution.id,\n  failed_step: errorData.execution?.lastNodeExecuted || 'unknown',\n  error_message: errorData.execution?.error?.description || errorData.execution?.error?.message || 'No error message',\n  payload: errorData || {},\n  workflow_name: errorData.workflow?.name || $workflow.name\n};\n\nlet error_type = 'unknown';\n\nif (\n  errorInfo.failed_step.includes('Validate') || \n  errorInfo.failed_step.includes('Check') ||\n  errorInfo.error_message.includes('required') || \n  errorInfo.error_message.includes('Missing') ||\n  errorInfo.error_message.includes('Invalid')\n) {\n  error_type = 'validation_error';\n}\nelse if (\n  errorInfo.failed_step.includes('AI') || \n  errorInfo.failed_step.includes('OpenAI') || \n  errorInfo.failed_step.includes('Extract') ||\n  errorInfo.error_message.includes('API') ||\n  errorInfo.error_message.includes('401') ||\n  errorInfo.error_message.includes('timeout')\n) {\n  error_type = 'ai_error';\n}\nelse if (\n  errorInfo.failed_step.includes('Database') || \n  errorInfo.failed_step.includes('Postgres') ||\n  errorInfo.failed_step.includes('Write') ||\n  errorInfo.failed_step.includes('Log') ||\n  errorInfo.error_message.includes('postgres') ||\n  errorInfo.error_message.includes('database')\n) {\n  error_type = 'db_error';\n}\nelse if (\n  errorInfo.failed_step.includes('Slack') ||\n  errorInfo.failed_step.includes('Notification') ||\n  errorInfo.error_message.includes('slack')\n) {\n  error_type = 'slack_error';\n}\n\nerrorInfo.error_type = error_type;\n\nreturn { json: errorInfo };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [224, 96],
+      "id": "3f9b8a63-437a-4ec9-8951-36c1022d07b2",
+      "name": "1-Parse-Error-Info"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.error_type }}",
+                    "rightValue": "validation_error",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "7f8436c1-9948-49d7-8fd3-06b4db7de60c"
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "4bcab97c-28c6-4242-96a3-907a55ed1e23",
+                    "leftValue": "={{ $json.error_type }}",
+                    "rightValue": "ai_error",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "9eca2007-140f-4da9-885e-a9579ffed3b0",
+                    "leftValue": "={{ $json.error_type }}",
+                    "rightValue": "db_error",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "1be458b8-9b5e-4ce6-80f8-dbeea3f8144c",
+                    "leftValue": "={{ $json.error_type }} ",
+                    "rightValue": "slack_error",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [448, 48],
+      "id": "5bea208d-2cbe-4e0b-9c79-5f07af29b4d8",
+      "name": "2-Error-Classification"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "55bf3348-aa6d-4b4d-bf16-208d2aac1cb2",
+              "name": "max_retries",
+              "value": "0",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [672, -288],
+      "id": "d450a893-2cd9-4f68-afec-db633e75b9eb",
+      "name": "2.1-Set-Validation-Retries"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "beda9d25-69fb-4cb4-b45e-7e3c863a2b1f",
+              "name": "max_retries",
+              "value": "3",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [672, -96],
+      "id": "f77643a6-02b3-4256-b0f5-16261b79876f",
+      "name": "2.2-Set-AI-Error-Retries"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "c9a057f9-e5a7-4ea6-b7e7-921d256f73ee",
+              "name": "max_retries",
+              "value": "3",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [672, 96],
+      "id": "180ec0d2-39c0-4d71-a814-8be44b95d0dc",
+      "name": "2.3-Set-DB-Error-Retries"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "000ec15e-cd2c-4dc2-8094-36b4c1b130fa",
+              "name": "max_retries",
+              "value": "2",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [672, 288],
+      "id": "f6be5bb5-c84a-4467-b26d-c97effed0fbc",
+      "name": "2.4-Set-Slack-Error-Retries"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "07b536c3-e186-4994-8aa2-c8644fc18cdd",
+              "name": "max_retries",
+              "value": "1",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [672, 480],
+      "id": "7a9b6ac1-5611-41ce-b7b5-72ed2b11d15b",
+      "name": "2.5-Set-Unknown-Retries"
+    },
+    {
+      "parameters": {
+        "jsCode": "const maxRetries = $json.max_retries;\nconst retryCount = 0;\n\n// Exponential backoff: 1min, 5min, 15min\nconst retryDelays = [1, 5, 15];\nconst delayMinutes = retryDelays[Math.min(retryCount, retryDelays.length - 1)];\n\nconst nextRetryAt = new Date(Date.now() + delayMinutes * 60 * 1000);\n\nreturn {\n  json: {\n    ...($json),\n    retry_count: retryCount,\n    max_retries: maxRetries,\n    next_retry_at: nextRetryAt.toISOString(),\n    status: 'pending'\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [896, 96],
+      "id": "45453886-1b28-436d-a590-e1ba9ebde48a",
+      "name": "3-Calculate-Retry-Time"
+    },
+    {
+      "parameters": {
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "dead_letter_queue",
+          "mode": "list",
+          "cachedResultName": "dead_letter_queue"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "lead_id": "={{ $json.lead_id }}",
+            "retry_count": "={{ $json.retry_count }}",
+            "max_retries": "={{ $json.max_retries }}",
+            "run_id": "={{ $json.run_id }}",
+            "error_type": "={{ $json.error_type }}",
+            "error_message": "={{ $json.error_message }}",
+            "payload": "={{ JSON.stringify($json.payload) }}",
+            "status": "={{ $json.status }}",
+            "next_retry_at": "={{ $json.next_retry_at }}",
+            "idempotency_key": "={{ $json.idempotency_key || null }}",
+            "failed_step": "={{ $json.failed_step }}"
+          },
+          "matchingColumns": ["id"],
+          "schema": [
+            {"id": "id", "displayName": "id", "required": false, "defaultMatch": true, "display": true, "type": "number", "canBeUsedToMatch": true, "removed": true},
+            {"id": "run_id", "displayName": "run_id", "required": true, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true},
+            {"id": "lead_id", "displayName": "lead_id", "required": false, "defaultMatch": false, "display": true, "type": "number", "canBeUsedToMatch": true},
+            {"id": "error_type", "displayName": "error_type", "required": true, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true},
+            {"id": "failed_step", "displayName": "failed_step", "required": true, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true},
+            {"id": "error_message", "displayName": "error_message", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true},
+            {"id": "payload", "displayName": "payload", "required": true, "defaultMatch": false, "display": true, "type": "object", "canBeUsedToMatch": true},
+            {"id": "retry_count", "displayName": "retry_count", "required": false, "defaultMatch": false, "display": true, "type": "number", "canBeUsedToMatch": true},
+            {"id": "max_retries", "displayName": "max_retries", "required": false, "defaultMatch": false, "display": true, "type": "number", "canBeUsedToMatch": true},
+            {"id": "status", "displayName": "status", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true},
+            {"id": "next_retry_at", "displayName": "next_retry_at", "required": false, "defaultMatch": false, "display": true, "type": "dateTime", "canBeUsedToMatch": true},
+            {"id": "created_at", "displayName": "created_at", "required": false, "defaultMatch": false, "display": true, "type": "dateTime", "canBeUsedToMatch": true},
+            {"id": "updated_at", "displayName": "updated_at", "required": false, "defaultMatch": false, "display": true, "type": "dateTime", "canBeUsedToMatch": true},
+            {"id": "resolved_at", "displayName": "resolved_at", "required": false, "defaultMatch": false, "display": true, "type": "dateTime", "canBeUsedToMatch": true},
+            {"id": "idempotency_key", "displayName": "idempotency_key", "required": false, "defaultMatch": false, "display": true, "type": "string", "canBeUsedToMatch": true}
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [1104, 96],
+      "id": "a73e5e9c-4e11-4b3c-b935-37b0e6568293",
+      "name": "4-Write-to-DLQ",
+      "credentials": {
+        "postgres": {
+          "id": "Ok0r1JvGdedXb5am",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "YOUR_SLACK_WEBHOOK_URL",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"⚠️ Pipeline Error Alert\",\n  \"blocks\": [\n    {\n      \"type\": \"header\",\n      \"text\": {\n        \"type\": \"plain_text\",\n        \"text\": \"⚠️ AI GTM System Error\"\n      }\n    },\n    {\n      \"type\": \"section\",\n      \"fields\": [\n        {\n          \"type\": \"mrkdwn\",\n          \"text\": \"*Run ID:*\\n{{ $('Error Trigger').first().json.execution.id }}\"\n        },\n        {\n          \"type\": \"mrkdwn\",\n          \"text\": \"*Failed Step:*\\n{{ $('Error Trigger').first().json.execution.lastNodeExecuted }}\"\n        },\n        {\n          \"type\": \"mrkdwn\",\n          \"text\": \"*Error Description:*\\n{{ $('Error Trigger').first().json.execution.error.description }}\"\n        },\n        {\n          \"type\": \"mrkdwn\",\n          \"text\": \"*Error Details:*\\n{{ $('Error Trigger').first().json.execution.error.message }}\"\n        }\n      ]\n    },\n    {\n      \"type\": \"section\",\n      \"fields\": [\n        {\n          \"type\": \"mrkdwn\",\n          \"text\": \"*Error Type:*\\n{{ $('1-Parse-Error-Info').item.json.error_type }}\"\n        },\n        {\n          \"type\": \"mrkdwn\",\n          \"text\": \"*Max Retries:*\\n{{ $('3-Calculate-Retry-Time').item.json.max_retries }}\"\n        }\n      ]\n    },\n    {\n      \"type\": \"section\",\n      \"text\": {\n        \"type\": \"mrkdwn\",\n        \"text\": \"*Next Retry:* {{ $('3-Calculate-Retry-Time').item.json.next_retry_at }}\\n*Workflow:* {{ $('Error Trigger').first().json.workflow.name }}\"\n      }\n    }\n  ]\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1312, 96],
+      "id": "21eb7a8e-8400-44b2-bb0d-c0ab27cf23ea",
+      "name": "5-Send-Slack-Alert"
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "1-Parse-Error-Info",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "1-Parse-Error-Info": {
+      "main": [
+        [
+          {
+            "node": "2-Error-Classification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2-Error-Classification": {
+      "main": [
+        [
+          {
+            "node": "2.1-Set-Validation-Retries",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "2.2-Set-AI-Error-Retries",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "2.3-Set-DB-Error-Retries",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "2.4-Set-Slack-Error-Retries",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "2.5-Set-Unknown-Retries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2.1-Set-Validation-Retries": {
+      "main": [
+        [
+          {
+            "node": "3-Calculate-Retry-Time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2.2-Set-AI-Error-Retries": {
+      "main": [
+        [
+          {
+            "node": "3-Calculate-Retry-Time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2.3-Set-DB-Error-Retries": {
+      "main": [
+        [
+          {
+            "node": "3-Calculate-Retry-Time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2.4-Set-Slack-Error-Retries": {
+      "main": [
+        [
+          {
+            "node": "3-Calculate-Retry-Time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2.5-Set-Unknown-Retries": {
+      "main": [
+        [
+          {
+            "node": "3-Calculate-Retry-Time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3-Calculate-Retry-Time": {
+      "main": [
+        [
+          {
+            "node": "4-Write-to-DLQ",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4-Write-to-DLQ": {
+      "main": [
+        [
+          {
+            "node": "5-Send-Slack-Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

@@ -1,23 +1,32 @@
-# 环境变量（包含敏感信息）
+# Environment variables (contain API keys, passwords)
 .env
+.env.local
+.env.*.local
 
-# Docker 数据
+# Docker persistent data
 postgres_data/
 n8n_data/
 
-# 日志文件
+# Credentials & recovery backups (contain encrypted secrets)
+recovery/
+
+# Temporary debug/test files
+tests/tmp_*.sql
+*.tmp
+
+# Logs
 *.log
 
-# 操作系统文件
+# OS files
 .DS_Store
 Thumbs.db
 
-# 编辑器配置
+# Editor/IDE config
 .vscode/
 .idea/
 *.swp
 *.swo
 
-# 临时文件
-*.tmp
+# Cache
 .cache/
+node_modules/
