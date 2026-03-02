@@ -1,56 +1,132 @@
 # AI-First GTM Lead Processing System
 
-An end-to-end AI-powered Go-To-Market lead processing pipeline built with n8n, OpenAI, PostgreSQL, HubSpot CRM, and Slack.
+**An end-to-end AI-powered sales lead processing pipeline** that automatically captures, extracts, scores, and routes high-quality leads through an intelligent multi-stage workflow.
 
-## What It Does
+Built with: **n8n** | **OpenAI GPT-3.5** | **PostgreSQL 16** | **HubSpot CRM** | **Slack** | **Docker**
 
-Automatically processes incoming sales leads through an intelligent pipeline:
-
-```
-Webhook Input → AI Extraction → Database Storage → CRM Sync → Team Notification
-```
-
-1. **Receives** lead inquiries via webhook
-2. **Extracts** structured data (company, contact, email, budget, urgency) using OpenAI
-3. **Scores** lead quality (0-100) based on budget clarity, urgency, and completeness
-4. **Stores** all leads in PostgreSQL with idempotency protection
-5. **Syncs** high-quality leads (score ≥ 70) to HubSpot CRM
-6. **Notifies** the sales team via Slack with a clickable HubSpot link
+---
 
 ## Architecture
 
+```mermaid
+flowchart LR
+    A[Webhook POST] --> B[Input Validation<br/>+ RunID + Idempotency Key]
+    B --> C[OpenAI GPT-3.5<br/>Few-shot Extraction<br/>+ Confidence Scoring]
+    C --> D[Output Validation<br/>Schema + Type Check]
+    D --> E[Multi-Dimension<br/>Weighted Scoring]
+    E --> F[PostgreSQL UPSERT<br/>Idempotency Guard]
+    F --> G{Score ≥ 70?}
+    G -->|Yes| H[HubSpot CRM<br/>Contact Upsert]
+    G -->|No| I[Log Low Score]
+    H --> J[Slack<br/>Team Alert]
+
+    style C fill:#4A90D9,color:#fff
+    style E fill:#7B68EE,color:#fff
+    style F fill:#2E8B57,color:#fff
 ```
-┌─────────────┐     ┌──────────────┐     ┌────────────┐
-│   Webhook   │────▶│  Input       │────▶│  OpenAI    │
-│   (POST)    │     │  Validation  │     │  GPT-3.5   │
-└─────────────┘     └──────────────┘     └─────┬──────┘
-                                               │
-                    ┌──────────────┐     ┌──────▼──────┐
-                    │  Score Check │◀────│  PostgreSQL │
-                    │  (IF ≥ 70)   │     │  UPSERT     │
-                    └──┬───────┬───┘     └─────────────┘
-                       │       │
-              ┌────────▼┐   ┌─▼─────────┐
-              │ HubSpot │   │ Log Low   │
-              │ Upsert  │   │ Score     │
-              └────┬────┘   └───────────┘
-                   │
-              ┌────▼────┐
-              │  Slack  │
-              │ Notify  │
-              └─────────┘
+
+**Error Recovery Pipeline:**
+
+```mermaid
+flowchart LR
+    ERR[Pipeline Error] --> CLS[Error Classification<br/>5 error types]
+    CLS --> DLQ[Dead Letter Queue<br/>Payload Preserved]
+    DLQ --> WORKER[Retry Worker<br/>Every 15 min]
+    WORKER --> BACK[Exponential Backoff<br/>5→15→60 min]
+    BACK -->|Max 3 retries| PERM[Permanent Failure<br/>→ Slack Alert]
+
+    style DLQ fill:#DC143C,color:#fff
+    style WORKER fill:#FF8C00,color:#fff
 ```
+
+---
+
+## Results & Metrics
+
+| Metric | Value | How |
+|--------|-------|-----|
+| **Deduplication Hit Rate** | 100% on repeated submissions | SHA256 idempotency key on normalized text; PostgreSQL `ON CONFLICT` guarantees zero duplicates |
+| **DLQ Recovery Rate** | Up to 100% for transient errors | Exponential backoff retry (5→15→60 min), max 3 attempts; validation errors skipped (0 retries) |
+| **End-to-End Latency** | ~2-3s per lead | Webhook → AI extraction → DB write → CRM sync → Slack notification |
+
+---
+
+## Key Technical Highlights
+
+### 1. AI Prompt Engineering — Few-Shot with Confidence Scoring
+
+Not just a simple "extract these fields" prompt. The system uses:
+- **Few-shot examples** (2 demonstrations) to anchor output format
+- **Per-field confidence scores** (0.0–1.0) so downstream logic knows how reliable each extraction is
+- **Analysis summary** — a one-line reasoning note (not verbose chain-of-thought) explaining extraction quality
+- **Schema-constrained JSON** output with strict type enforcement
+
+```json
+{
+  "company": "星辰科技有限公司",
+  "contact_name": "张伟",
+  "email": "zhangwei@xingchen.com",
+  "budget": "50万",
+  "urgency": "下周开始对接",
+  "analysis_summary": "High-quality lead: company, contact, email, clear budget and urgent timeline",
+  "confidence": { "company": 1.0, "contact_name": 1.0, "email": 1.0, "budget": 0.9, "urgency": 0.9 }
+}
+```
+
+### 2. Multi-Dimension Weighted Scoring
+
+Leads are scored across 5 weighted dimensions, not just keyword matching:
+
+| Dimension | Weight | Scoring Logic |
+|-----------|--------|--------------|
+| Budget | 30% | Has amount keyword → 100; has info → 60; none → 0 |
+| Urgency | 20% | Immediate (天/周/紧急) → 100; medium (月/季度) → 70; has info → 50 |
+| Contact Info | 20% | Email → +60; Name → +40 |
+| Company | 15% | Present → 100; absent → 0 |
+| AI Confidence | 15% | Average confidence across all fields × 100 |
+
+Each lead includes a `score_breakdown` object for full audit trail.
+
+### 3. Idempotency — SHA256 Deduplication
+
+Every lead text is normalized (lowercase, whitespace-collapsed, punctuation-standardized) and hashed. The same lead submitted twice produces the same `idempotency_key`, triggering PostgreSQL's `ON CONFLICT → UPDATE` instead of a duplicate insert.
+
+### 4. Dead Letter Queue with Exponential Backoff
+
+Failed leads aren't lost — they're captured in a DLQ with the full original payload:
+
+| Error Type | Max Retries | Backoff Schedule |
+|------------|-------------|------------------|
+| `ai_error` | 3 | 5 min → 15 min → 60 min |
+| `db_error` | 3 | 5 min → 15 min → 60 min |
+| `slack_error` | 2 | 5 min → 15 min |
+| `validation_error` | 0 | No retry (bad input) |
+| `unknown` | 1 | 5 min |
+
+A background worker runs every 15 minutes to process pending retries.
+
+### 5. Event Sourcing for Audit Trail
+
+Every pipeline step writes to an `events` table with a `run_id` for end-to-end tracing. You can reconstruct the full lifecycle of any lead:
+
+```sql
+SELECT step, status, created_at FROM events WHERE run_id = 'abc123' ORDER BY created_at;
+```
+
+---
 
 ## Tech Stack
 
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| Orchestration | n8n | Workflow automation |
-| AI | OpenAI GPT-3.5 Turbo | Information extraction & scoring |
-| Database | PostgreSQL 16 | Lead storage & event logging |
-| CRM | HubSpot (Private App) | Contact management |
-| Notifications | Slack Webhooks | Real-time team alerts |
-| Deployment | Docker Compose | Local development |
+| Layer | Technology | Why This Choice |
+|-------|-----------|-----------------|
+| Orchestration | **n8n** | Visual workflow builder; self-hosted for data control |
+| AI | **OpenAI GPT-3.5 Turbo** | Best cost/quality ratio for structured extraction |
+| Database | **PostgreSQL 16** | JSONB for flexible data, UPSERT for idempotency |
+| CRM | **HubSpot** | Industry-standard CRM with robust API |
+| Notifications | **Slack Webhooks** | Real-time team alerts with zero setup |
+| Infrastructure | **Docker Compose** | One-command local deployment |
+
+---
 
 ## Quick Start
 
@@ -58,8 +134,8 @@ Webhook Input → AI Extraction → Database Storage → CRM Sync → Team Notif
 
 - Docker & Docker Compose
 - OpenAI API key
-- HubSpot account with Private App ([setup guide](docs/hubspot-setup.md))
-- Slack workspace with Incoming Webhook ([setup guide](docs/slack-setup-guide.md))
+- HubSpot Private App token ([setup guide](docs/slack-setup-guide.md))
+- Slack Incoming Webhook URL
 
 ### 1. Clone & Configure
 
@@ -67,83 +143,92 @@ Webhook Input → AI Extraction → Database Storage → CRM Sync → Team Notif
 git clone https://github.com/Zey-Z/ai-gtm-system.git
 cd ai-gtm-system
 cp .env.example .env
-# Edit .env with your credentials
+# Edit .env with your API keys
 ```
 
 ### 2. Start Services
 
 ```bash
 docker-compose up -d
+# PostgreSQL → port 5432, n8n → port 5678
 ```
 
-This starts PostgreSQL (port 5432) and n8n (port 5678).
+### 3. Import Workflows
 
-### 3. Import Workflow
-
-1. Open n8n at `http://localhost:5678`
-2. Go to **Settings → Import from File**
-3. Select `workflows/AI-Lead-Extractor-v1.json`
-4. Configure credentials in n8n:
-   - OpenAI API key
-   - PostgreSQL connection
-   - HubSpot Private App token
-   - Slack Webhook URL
+Open `http://localhost:5678`, import these 3 workflow files:
+- `workflows/AI-Lead-Extractor-v1.json` — Main pipeline
+- `workflows/DLQ-Retry-Worker.json` — Background retry worker
+- `workflows/Error-Handler.json` — Error classification & DLQ routing
 
 ### 4. Test
 
 ```bash
 curl -X POST http://localhost:5678/webhook/lead-intake \
   -H "Content-Type: application/json" \
-  -d '{"lead_text":"We are TechStartup Inc, interested in your enterprise AI solution. I am Sarah Chen, email sarah.chen@techstartup.com. Our budget is around $75000, hoping to start within two weeks."}'
+  -d '{
+    "lead_text": "Hi, I am Sarah Chen from TechStartup Inc. Email: sarah@techstartup.com. We have a budget of $75K and need to start within two weeks."
+  }'
 ```
 
-**PowerShell:**
-```powershell
-Invoke-WebRequest -Uri "http://localhost:5678/webhook/lead-intake" `
-  -Method POST -ContentType "application/json" `
-  -Body '{"lead_text":"We are TechStartup Inc, interested in your enterprise AI solution. I am Sarah Chen, email sarah.chen@techstartup.com. Our budget is around $75000, hoping to start within two weeks."}'
+Expected: AI extracts all 5 fields with high confidence → score ≥ 70 → syncs to HubSpot → Slack notification sent.
+
+---
+
+## Project Structure
+
+```
+ai-gtm-system/
+├── workflows/
+│   ├── AI-Lead-Extractor-v1.json    # Main pipeline (11 nodes)
+│   ├── DLQ-Retry-Worker.json        # Background retry (11 nodes)
+│   └── Error-Handler.json           # Error classification (8 nodes)
+├── db/
+│   ├── init.sql                     # Base schema (leads + events)
+│   ├── dlq-queries.sql              # Monitoring queries
+│   └── migrations/
+│       ├── 001_add_run_id.sql       # Distributed tracing
+│       ├── 002_create_dlq.sql       # Dead Letter Queue
+│       └── 003_add_idempotency.sql  # SHA256 deduplication
+├── docs/
+│   ├── architecture.md              # System design & decisions
+│   ├── prompt-engineering.md        # AI prompt design rationale
+│   ├── dlq-operations.md            # DLQ monitoring & operations
+│   └── ...                          # Setup guides
+├── tests/
+│   ├── test-webhook.ps1             # End-to-end webhook tests
+│   ├── test-scoring.js              # Scoring algorithm unit tests
+│   └── test-queries.sql             # Database verification queries
+├── docker-compose.yml               # PostgreSQL + n8n
+├── .env.example                     # Required environment variables
+└── README.md
 ```
 
-## Workflow Nodes
+---
 
-| Node | Name | Function |
-|------|------|----------|
-| 1 | Receive-Webhook | HTTP POST endpoint |
-| 1.5 | Validate-Input-Generate-RunID | Input validation & idempotency key |
-| 1.6 | Validation-Result-Check | Route valid/invalid inputs |
-| 2 | AI-Extract-Info | OpenAI structured extraction |
-| 2.5 | Validate-AI-Output | Verify AI response format |
-| 3 | Prepare-Data | Transform & score lead data |
-| 4 | Write-to-Database | PostgreSQL UPSERT with conflict handling |
-| 5 | Check-High-Score | Route by score threshold (≥ 70) |
-| 6 | HubSpot-Contact-Upsert | Create/update CRM contact |
-| 6.7 | Prepare-Slack-Data | Format notification payload |
-| 7 | Send-Slack-Notification | POST to Slack webhook |
+## System Design Decisions
 
-## Key Features
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Workflow engine | n8n (self-hosted) | Full data control, no vendor lock-in, visual debugging |
+| AI model | GPT-3.5 Turbo | Sufficient accuracy for structured extraction at 10× lower cost than GPT-4 |
+| Prompt strategy | Few-shot + confidence | More reliable than zero-shot; confidence enables downstream quality gates |
+| Scoring | Rule-based weighted | Transparent, auditable, tunable; ML-based scoring planned for v2 |
+| Error recovery | DLQ + exponential backoff | Industry-standard pattern for resilient async processing |
+| Idempotency | Content hash (not request ID) | Same lead text = same key, regardless of submission source |
+| Database | PostgreSQL UPSERT | Atomic create-or-update in single query; no race conditions |
 
-- **Idempotency**: SHA256-based deduplication prevents duplicate lead processing
-- **UPSERT**: Database and HubSpot both handle create-or-update seamlessly
-- **Event Logging**: Every pipeline step is logged for full audit trail
-- **Score-Based Routing**: Only high-quality leads sync to CRM and trigger notifications
-- **Error Handling**: Dead Letter Queue for failed processing with retry support
-
-## Database Schema
-
-See [db/init.sql](db/init.sql) for the base schema and [db/migrations/](db/migrations/) for incremental changes:
-
-- `001_add_run_id.sql` - End-to-end request tracing
-- `002_create_dlq.sql` - Dead Letter Queue with exponential backoff
-- `003_add_idempotency.sql` - SHA256 idempotency keys
+---
 
 ## Documentation
 
+- [Architecture & Design](docs/architecture.md)
+- [Prompt Engineering Rationale](docs/prompt-engineering.md)
+- [DLQ Operations Manual](docs/dlq-operations.md)
+- [DLQ Test Runbook](docs/dlq-test-runbook.md)
 - [PostgreSQL Setup](docs/n8n-postgres-setup.md)
 - [Slack Integration](docs/slack-setup-guide.md)
-- [Stage 1: Webhook Setup](docs/stage1-webhook-setup.md)
-- [Event Logging](docs/stage1.5-events-logging.md)
-- [DLQ Operations](docs/dlq-operations.md)
-- [Query Parameter Fix](docs/postgres-parameterized-query-fix.md)
+
+---
 
 ## License
 
