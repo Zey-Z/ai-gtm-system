@@ -5,11 +5,11 @@
 ### v1: Basic Zero-Shot (Initial)
 
 ```
-你是一个销售线索信息提取助手。
-请提取以下信息并以 JSON 格式返回：
+You are a sales lead information extraction assistant.
+Please extract the following fields and return as JSON:
 - company, contact_name, email, budget, urgency
-输入文本：{text}
-请只返回 JSON。
+Input text: {text}
+Return only JSON.
 ```
 
 **Problems observed:**
@@ -57,8 +57,8 @@ The confidence score enables:
 
 Chain-of-thought (CoT) prompting makes the model "think aloud":
 ```
-"thinking": "The text mentions '星辰科技' which is likely a company name.
-The person says '我是张伟' so the contact name is probably..."
+"thinking": "The text mentions 'Acme Technologies' which is likely a company name.
+The sender says 'I am Sarah Chen' so the contact name is probably..."
 ```
 
 **We chose NOT to use full CoT because:**
@@ -88,12 +88,12 @@ We use 0.1 (not 0.0) because:
 - Slight variation (0.1) prevents the model from getting "stuck" on edge cases
 - For information extraction, we want consistency, not creativity
 
-### Prompt Language: Chinese
+### Prompt Language
 
-The prompt is written in Chinese because the target market's lead text is in Chinese. Using the same language as the input:
+The prompt language matches the expected input language. Using the same language as the input:
 - Reduces translation overhead for the model
-- Improves extraction accuracy for Chinese names, company suffixes (有限公司, 集团), and currency terms (万, 元)
-- Few-shot examples demonstrate Chinese-specific patterns
+- Improves extraction accuracy for locale-specific patterns (company suffixes, currency terms, date formats)
+- Few-shot examples demonstrate patterns the model will encounter in production
 
 ## Output Schema
 
@@ -119,8 +119,8 @@ The prompt is written in Chinese because the target market's lead text is in Chi
 
 | Range | Meaning | Example |
 |-------|---------|---------|
-| 1.0 | Explicitly stated in text | "我的邮箱是 a@b.com" → email confidence 1.0 |
-| 0.7-0.9 | Reasonably inferred | Text mentions "尽快", model infers high urgency |
+| 1.0 | Explicitly stated in text | "My email is a@b.com" → email confidence 1.0 |
+| 0.7-0.9 | Reasonably inferred | Text mentions "ASAP", model infers high urgency |
 | 0.3-0.6 | Ambiguous or incomplete | Company name partially mentioned |
 | 0.0 | Not mentioned at all | Field returns null, confidence 0.0 |
 

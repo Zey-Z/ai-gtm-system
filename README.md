@@ -63,11 +63,11 @@ Not just a simple "extract these fields" prompt. The system uses:
 
 ```json
 {
-  "company": "星辰科技有限公司",
-  "contact_name": "张伟",
-  "email": "zhangwei@xingchen.com",
-  "budget": "50万",
-  "urgency": "下周开始对接",
+  "company": "Acme Technologies Inc.",
+  "contact_name": "Sarah Chen",
+  "email": "sarah@acmetech.com",
+  "budget": "$75K",
+  "urgency": "Need to start within two weeks",
   "analysis_summary": "High-quality lead: company, contact, email, clear budget and urgent timeline",
   "confidence": { "company": 1.0, "contact_name": 1.0, "email": 1.0, "budget": 0.9, "urgency": 0.9 }
 }
@@ -80,7 +80,7 @@ Leads are scored across 5 weighted dimensions, not just keyword matching:
 | Dimension | Weight | Scoring Logic |
 |-----------|--------|--------------|
 | Budget | 30% | Has amount keyword → 100; has info → 60; none → 0 |
-| Urgency | 20% | Immediate (天/周/紧急) → 100; medium (月/季度) → 70; has info → 50 |
+| Urgency | 20% | Immediate (days/weeks/ASAP) → 100; medium (months/quarterly) → 70; has info → 50 |
 | Contact Info | 20% | Email → +60; Name → +40 |
 | Company | 15% | Present → 100; absent → 0 |
 | AI Confidence | 15% | Average confidence across all fields × 100 |
@@ -134,7 +134,7 @@ SELECT step, status, created_at FROM events WHERE run_id = 'abc123' ORDER BY cre
 
 - Docker & Docker Compose
 - OpenAI API key
-- HubSpot Private App token ([setup guide](docs/slack-setup-guide.md))
+- HubSpot Private App token
 - Slack Incoming Webhook URL
 
 ### 1. Clone & Configure
@@ -223,10 +223,6 @@ ai-gtm-system/
 
 - [Architecture & Design](docs/architecture.md)
 - [Prompt Engineering Rationale](docs/prompt-engineering.md)
-- [DLQ Operations Manual](docs/dlq-operations.md)
-- [DLQ Test Runbook](docs/dlq-test-runbook.md)
-- [PostgreSQL Setup](docs/n8n-postgres-setup.md)
-- [Slack Integration](docs/slack-setup-guide.md)
 
 ---
 
