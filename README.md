@@ -223,6 +223,8 @@ ai-gtm-system/
 
 - [Architecture & Design](docs/architecture.md)
 - [Prompt Engineering Rationale](docs/prompt-engineering.md)
+- [DLQ Operations Manual](docs/dlq-operations.md)
+- [DLQ Test Runbook](docs/dlq-test-runbook.md)
 
 ---
 
